@@ -20,6 +20,7 @@ lock_filewrite = Lock()
 q = queue.Queue()
 
 outfile = None
+debug_global = None
 
 start_time = None
 end_time = None
@@ -29,13 +30,14 @@ role_name = None
 
 def main(args):
 
-	global outfile, start_time, end_time, time_lapse, role_name
+	global outfile, debug_global, start_time, end_time, time_lapse, role_name
 
 	sleep = args.sleep
 	target_file = args.file
 	num_hosts = args.num_hosts
 	ports_list = args.ports
 	outfile = args.outfile
+	debug_global = args.debug
 
 	access_key = args.access_key
 	secret_access_key = args.secret_access_key
@@ -339,16 +341,27 @@ def create_role(access_key, secret_access_key, region_name):
 
 		if 'DPS_Role' == role_name:
 			return arn
-	#
-	# Error here, Roles created are at a global level, so since multi threaded, they all try to create at once
-	#
-	#
-	role_response = client.create_role(RoleName='DPS_Role',
-		AssumeRolePolicyDocument=json.dumps(lambda_policy)
-	)
-	role = role_response['Role']
 
-	return role['Arn']
+	try:
+		role_response = client.create_role(RoleName='DPS_Role',
+			AssumeRolePolicyDocument=json.dumps(lambda_policy)
+		)
+		role = role_response['Role']
+
+		return role['Arn']
+
+	except:
+		return None
+
+
+# GOOD
+def loop_create_role(access_key, secret_access_key, region_name):
+
+	role_name = None
+	while role_name == None:
+		role_name = create_role(access_key, secret_access_key, region_name)
+
+	return role_name
 
 
 # GOOD
@@ -365,21 +378,10 @@ def create_lambda(access_key, secret_access_key, zip_path, region_idx):
 		zip_data = fh.read()
 
 	try:
-		# role_name = ""
-		# try:
-		# 	role_name = create_role(access_key, secret_access_key, region)
-		# except Exception as ex:
-		# 	log_entry('DEBUG FAILED {reg}: {er}'.format(reg=region,er=ex))
-		# 	time.sleep(10) # TODO - may cause multiple delays
-		#
-		# 	client = init_client('iam', access_key, secret_access_key, region)
-		# 	try:
-		# 		client.delete_role(RoleName='DPS_Role')
-		# 	except Exception as ex:
-		# 		log_entry("DEBUG ROLE DELETE FAILED {reg}: {ex}".format(reg=region,ex=ex))
-		# 		pass
-		# 	role_name = create_role(access_key, secret_access_key, region)
 
+		role_name = loop_create_role(access_key, secret_access_key, region)
+		log_entry("{reg}: Roles created, sleeping for 15 seconds to allow AWS propagation".format(reg=region), debug=True)
+		time.sleep(15)
 		client = init_client('lambda', access_key, secret_access_key, region)
 		response = client.create_function(
 				Code={
@@ -432,14 +434,22 @@ def invoke_lambda(access_key, secret_access_key, arn, payload):
 
 
 # GOOD
-def log_entry(entry):
+def log_entry(entry, debug=False):
 	# TODO add debug flag
+
+	if debug == True and debug_global != True:
+		return
+
+	debug_str = ""
+	if debug:
+		debug_str = "DEBUG: "
+
 	global lock_filewrite
 
 	lock_filewrite.acquire()
 
 	ts = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-	print('[{}] {}'.format(ts, entry))
+	print('[{ts}] {dbg}{entry}'.format(ts=ts, dbg=debug_str, entry=entry))
 
 	if outfile is not None:
 		with open(outfile, 'a+') as file:
@@ -459,7 +469,7 @@ def clean_up(access_key, secret_access_key, thread_count, only_lambdas=True):
 				client.delete_role(RoleName='DPS_Role')
 				log_entry('Successfully cleaned DPS_Role in region {}'.format(region))
 			except Exception as ex:
-				log_entry('Failed to clean DPS_Role in region {reg}: {error}'.format(reg=region,error=ex))
+				log_entry('Failed to clean DPS_Role in region {reg}: {error}'.format(reg=region,error=ex), debug=True)
 
 	for client_name, client in lambda_clients.items():
 		log_entry('Cleaning up lambdas in {}...'.format(client.meta.region_name))
@@ -496,6 +506,7 @@ if __name__ == '__main__':
 	parser.add_argument('-p', '--ports', help='Ports list', required=True, nargs='+') # TODO CHECK - type of a list? want csv list of ports as input
 	parser.add_argument('-s', '--sleep', help='Sleep time for a host to wait between target scans', type=int, required=False)
 	parser.add_argument('-o', '--outfile', help='Output file to write contents', required=False)
+	parser.add_argument('-d', '--debug', help='Output debug content', action="store_true", default=False, required=False)
 	parser.add_argument('--access_key', help='aws access key', required=False)
 	parser.add_argument('--secret_access_key', help='aws secret access key', required=False)
 	parser.add_argument('--config', help='Authenticate to AWS using config file aws.config', type=str, default=None)
