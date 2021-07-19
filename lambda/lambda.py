@@ -1,17 +1,28 @@
+import botocore.vendored.requests as requests #As long as we're in AWS Lambda, this trick works for accessing requests
 import json, datetime, socket, time
+import urllib.request
+
+
 
 def lambda_handler(event, context):
-	return scan(event['target'], event['ports'])
+	return scan(event['target'], event['ports'], event['getIP'])
 
 
-def scan(target, ports):
+def scan(target, ports, getIP):
 
 	data_response = {
 		'results' : [],
 		'target' : target,
 		'ports' : ports,
+		'sourceIP' : '',
 		'errorMessage' : None
 	}
+
+	if getIP:
+		# with urllib.request.urlopen('http://icanhazip.com') as f:
+		# 	data_response['sourceIP'] = str(f.read(300).strip())
+		data_response['sourceIP'] = requests.get('http://icanhazip.com').text.strip()
+		return data_response
 
 	try:
 		for port in ports:
@@ -39,3 +50,6 @@ def scan(target, ports):
 		pass
 
 	return data_response
+
+
+print(scan("scanme.nmap.org",['443'],True))

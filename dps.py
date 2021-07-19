@@ -21,6 +21,7 @@ q = queue.Queue()
 
 outfile = None
 debug_global = None
+verbose = None
 
 start_time = None
 end_time = None
@@ -30,7 +31,7 @@ role_name = None
 
 def main(args):
 
-	global outfile, debug_global, start_time, end_time, time_lapse, role_name
+	global outfile, debug_global, verbose, start_time, end_time, time_lapse, role_name
 
 	sleep = args.sleep
 	target_file = args.file
@@ -38,6 +39,7 @@ def main(args):
 	ports_list = args.ports
 	outfile = args.outfile
 	debug_global = args.debug
+	verbose = args.verbose
 
 	access_key = args.access_key
 	secret_access_key = args.secret_access_key
@@ -80,13 +82,6 @@ def main(args):
 
 	# Prepare the deployment package
 	zip_path = create_zip()
-
-
-	# # init a role, and create before trying below?
-	# role_name = None
-	# while role_name == None:
-	# 	role_name = create_role(access_key, secret_access_key, 'us-east-2')
-	# 	print("try1")
 
 	# Create lambdas based on thread count
 	arns = load_lambdas(access_key, secret_access_key, num_hosts, zip_path)
@@ -144,8 +139,37 @@ def port_parse(ports_list):
 	return list(set(ports))
 
 
+def get_lambda_ip(access_key, secret_access_key, arn):
+
+	arn_parts = arn[0].split(':')
+	region_id = arn[1]
+	region, func = arn_parts[3], arn_parts[-1]
+	client = init_client('lambda', access_key, secret_access_key, region, region_id.split('_')[1])
+
+	payload = {}
+	payload['ports'] = None
+	payload['sleep'] = None
+	payload['target'] = None
+	payload['region'] = region
+	payload['getIP'] = True
+
+	response = client.invoke(
+		FunctionName   = func,
+		InvocationType = "RequestResponse",
+		Payload        = bytearray(json.dumps(payload), 'utf-8')
+	)
+
+	return_payload = json.loads(response['Payload'].read().decode("utf-8"))
+
+	return return_payload['sourceIP']
+
+
 # GOOD
 def start_scan(access_key, secret_access_key, arn, lambda_args):
+
+	ip = get_lambda_ip(access_key, secret_access_key, arn)
+	log_entry("Lambda Information - region: {reg}, IP: {ip}".format(reg=arn[1].split('_')[0], ip=ip))
+
 	while True:
 		target = q.get_nowait()
 
@@ -155,6 +179,8 @@ def start_scan(access_key, secret_access_key, arn, lambda_args):
 		payload = {}
 		payload['ports'] = lambda_args['ports']
 		payload['sleep'] = lambda_args['sleep']
+		payload['getIP'] = False
+		payload['sourceIP'] = ip
 		payload['target'] = target
 
 		invoke_lambda(
@@ -219,9 +245,6 @@ def load_zips(thread_count):
 def load_lambdas(access_key, secret_access_key, num_hosts, zip_path):
 
 	threads = num_hosts
-	# TODO CHECK - does the amount of regions matter?
-	if num_hosts > len(regions):
-		threads = len(regions)
 
 	if threads > q.qsize():
 		threads = q.qsize()
@@ -420,7 +443,6 @@ def create_lambda(access_key, secret_access_key, zip_path):
 
 # GOOD
 def invoke_lambda(access_key, secret_access_key, arn, payload):
-	lambdas = []
 	arn_parts = arn[0].split(':')
 	region_id = arn[1]
 	region, func = arn_parts[3], arn_parts[-1]
@@ -445,8 +467,11 @@ def invoke_lambda(access_key, secret_access_key, arn, payload):
 	if return_payload['errorMessage'] is not None:
 		log_entry(return_payload['errorMessage'])
 	else:
+		prepend = ''
+		if verbose:
+			prepend = '{reg}/{ip} - '.format(reg=region, ip=payload['sourceIP'])
 		for port_status in return_payload['results']:
-			log_entry("Discovered {} port {}/tcp on {}".format(port_status['status'], port_status['port'], return_payload['target']))
+			log_entry("{prepend}Discovered {status} port {port}/tcp on {target}".format(prepend=prepend, status=port_status['status'], port=port_status['port'], target=return_payload['target']))
 
 
 # GOOD
@@ -523,6 +548,7 @@ if __name__ == '__main__':
 	parser.add_argument('-s', '--sleep', help='Sleep time for a host to wait between target scans', type=int, default=0, required=False)
 	parser.add_argument('-o', '--outfile', help='Output file to write contents', required=False)
 	parser.add_argument('-d', '--debug', help='Output debug content', action="store_true", default=False, required=False)
+	parser.add_argument('-v', '--verbose', help='Output region & source IP addresses for scan host output', action="store_true", default=False, required=False)
 	parser.add_argument('--access_key', help='aws access key', required=False)
 	parser.add_argument('--secret_access_key', help='aws secret access key', required=False)
 	parser.add_argument('--config', help='Authenticate to AWS using config file aws.config', type=str, default=None)
