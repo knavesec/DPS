@@ -1,10 +1,10 @@
 import json, datetime, socket, time
 
 def lambda_handler(event, context):
-	return scan(event['target'], event['ports'], event['sleep'])
+	return scan(event['target'], event['ports'])
 
 
-def scan(target, ports, sleep):
+def scan(target, ports):
 
 	data_response = {
 		'results' : [],
@@ -12,9 +12,6 @@ def scan(target, ports, sleep):
 		'ports' : ports,
 		'errorMessage' : None
 	}
-
-	if sleep != None and sleep != 0:
-		time.sleep(sleep)
 
 	try:
 		for port in ports:

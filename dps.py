@@ -98,7 +98,7 @@ def main(args):
 	# Start Spray
 	with ThreadPoolExecutor(max_workers=len(arns)) as executor:
 		for arn in arns:
-			log_entry('Launching scan using {}...'.format(arn))
+			log_entry('Launching scan using {}...'.format(arn[0]))
 			executor.submit(
 				start_scan,
 				access_key=access_key,
@@ -235,15 +235,15 @@ def load_lambdas(access_key, secret_access_key, num_hosts, zip_path):
 					zip_path=zip_path,
 					access_key=access_key,
 					secret_access_key=secret_access_key,
-					region_idx=x, #TODO CHECK - can you make more than one lambda per region?
 				)
 			)
+
 	return [x.result() for x in arns]
 
 
 # GOOD
-def generate_random():
-	seed = random.getrandbits(32)
+def generate_random(num):
+	seed = random.getrandbits(num)
 	while True:
 	   yield seed
 	   seed += 1
@@ -252,7 +252,7 @@ def generate_random():
 # GOOD
 def create_zip():
 	lambda_path = 'lambda/'
-	random_name = next(generate_random())
+	random_name = next(generate_random(32))
 	build_zip = 'build/lambda_{}.zip'.format(random_name)
 
 	with lock:
@@ -288,13 +288,18 @@ def update_arns(region_name=None):
 
 
 # GOOD
-def init_client(service_type, access_key, secret_access_key, region_name):
+def init_client(service_type, access_key, secret_access_key, region_name, region_id=None):
 	ck_client = None
+
+	full_name = region_name+'_'+str(region_id)
 
 	# Reuse Lambda lambda_clients
 	if service_type == 'lambda':
 		if region_name in lambda_clients.keys():
-			return lambda_clients[region_name]
+			if region_id == None:
+				return lambda_clients[region_name]
+			else:
+				return lambda_clients[full_name]
 
 	with lock:
 		ck_client = boto3.client(
@@ -305,7 +310,10 @@ def init_client(service_type, access_key, secret_access_key, region_name):
 		)
 
 	if service_type == 'lambda':
-		lambda_clients[region_name] = ck_client # TODO CHECK - multiple lambdas in same region will overwrite
+		if region_id == None:
+			lambda_clients[region_name] = ck_client
+		else:
+			lambda_clients[full_name] = ck_client
 
 	return ck_client
 
@@ -365,8 +373,8 @@ def loop_create_role(access_key, secret_access_key, region_name):
 
 
 # GOOD
-def create_lambda(access_key, secret_access_key, zip_path, region_idx):
-	region = regions[region_idx]
+def create_lambda(access_key, secret_access_key, zip_path):
+	region = random.choice(regions)
 	head,tail = ntpath.split(zip_path)
 	build_file = tail.split('.')[0]
 	lambda_name = build_file.split('_')[0]
@@ -382,7 +390,9 @@ def create_lambda(access_key, secret_access_key, zip_path, region_idx):
 		role_name = loop_create_role(access_key, secret_access_key, region)
 		log_entry("{reg}: Roles created, sleeping for 15 seconds to allow AWS propagation".format(reg=region), debug=True)
 		time.sleep(15)
-		client = init_client('lambda', access_key, secret_access_key, region)
+		region_id = next(generate_random(32))
+		build_file = "lambda_" + str(region_id)
+		client = init_client('lambda', access_key, secret_access_key, region, region_id)
 		response = client.create_function(
 				Code={
 					'ZipFile': zip_data,
@@ -401,7 +411,7 @@ def create_lambda(access_key, secret_access_key, zip_path, region_idx):
 
 		log_entry('Created lambda {} in {}'.format(response['FunctionArn'], region))
 
-		return response['FunctionArn']
+		return [response['FunctionArn'], region+'_'+str(region_id)]
 
 	except Exception as ex:
 		log_entry('Error creating lambda using {} in {}: {}'.format(zip_path, region, ex))
@@ -411,11 +421,17 @@ def create_lambda(access_key, secret_access_key, zip_path, region_idx):
 # GOOD
 def invoke_lambda(access_key, secret_access_key, arn, payload):
 	lambdas = []
-	arn_parts = arn.split(':')
+	arn_parts = arn[0].split(':')
+	region_id = arn[1]
 	region, func = arn_parts[3], arn_parts[-1]
-	client = init_client('lambda', access_key, secret_access_key, region)
+	client = init_client('lambda', access_key, secret_access_key, region, region_id.split('_')[1])
 
 	payload['region'] = region
+
+	if payload['sleep'] != 0:
+		log_entry("{reg}: Sleeping for {sleep} seconds of delay".format(reg=region, sleep=payload['sleep']), debug=True)
+		time.sleep(payload['sleep'])
+
 	response = client.invoke(
 		FunctionName   = func,
 		InvocationType = "RequestResponse",
@@ -504,7 +520,7 @@ if __name__ == '__main__':
 	parser.add_argument('-f', '--file', help='Input Target File', required=True)
 	parser.add_argument('-n', '--num-hosts', help='Number of spray hosts to be created', type=int, required=True)
 	parser.add_argument('-p', '--ports', help='Ports list', required=True, nargs='+') # TODO CHECK - type of a list? want csv list of ports as input
-	parser.add_argument('-s', '--sleep', help='Sleep time for a host to wait between target scans', type=int, required=False)
+	parser.add_argument('-s', '--sleep', help='Sleep time for a host to wait between target scans', type=int, default=0, required=False)
 	parser.add_argument('-o', '--outfile', help='Output file to write contents', required=False)
 	parser.add_argument('-d', '--debug', help='Output debug content', action="store_true", default=False, required=False)
 	parser.add_argument('--access_key', help='aws access key', required=False)
