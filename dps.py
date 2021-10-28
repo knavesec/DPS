@@ -139,6 +139,7 @@ def port_parse(ports_list):
 	return list(set(ports))
 
 
+# GOOD
 def get_lambda_ip(access_key, secret_access_key, arn):
 
 	arn_parts = arn[0].split(':')
@@ -471,7 +472,8 @@ def invoke_lambda(access_key, secret_access_key, arn, payload):
 		if verbose:
 			prepend = '{reg}/{ip} - '.format(reg=region, ip=payload['sourceIP'])
 		for port_status in return_payload['results']:
-			log_entry("{prepend}Discovered {status} port {port}/tcp on {target}".format(prepend=prepend, status=port_status['status'], port=port_status['port'], target=return_payload['target']))
+			if port_status['status'] != "closed":
+				log_entry("{prepend}Discovered {status} port {port}/tcp on {target}".format(prepend=prepend, status=port_status['status'], port=port_status['port'], target=return_payload['target']))
 
 
 # GOOD
